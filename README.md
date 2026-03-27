@@ -14,7 +14,6 @@ model = sm.models.ThirdPartyModel(
     entry_point="esmif1.model:compute_perplexity",
     path="../thirdparty/esmif1",
     url="https://github.com/szczurek-lab/seqme-esmif1",
-    extras=["cpu"],  # Options: "cpu", "cu126", "cu128", "cu130"
 )
 
 coords = [np.ones((4, 3, 3), dtype=np.float32)]  # shape: (seq_len, atoms, xyz), atoms: N, CA, C
@@ -23,13 +22,14 @@ sequences = ["AKMM"]
 model(coords, sequences, batch_size=256, device="cpu")
 ```
 
-For CUDA, set `extras` to the appropriate version, e.g. `extras=["cu126"]`.
 
 ### End-to-end example
 
 Fold sequences with ESMFold, then compute inverse-folding perplexity:
 
 ```python
+import seqme as sm
+
 sequences = ["MKRM", "KKRPR"]
 
 folder = sm.models.ESMFold()  # Folding model
@@ -43,7 +43,6 @@ inv_folder = sm.models.ThirdPartyModel(
     entry_point="esmif1.model:compute_perplexity",
     path="../thirdparty/esmif1",
     url="https://github.com/szczurek-lab/seqme-esmif1",
-    extras=["cpu"],  # Options: "cpu", "cu126", "cu128", "cu130"
 )
 
 inv_folder.compute_perplexity(coords, sequences)  # scPerplexity
