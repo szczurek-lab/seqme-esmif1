@@ -165,9 +165,9 @@ dependencies = [
 requires-dist = [
     { name = "biotite", specifier = "==0.41.2" },
     { name = "fair-esm", specifier = ">=2.0.0" },
-    { name = "scipy", specifier = ">=1.11.0" },
-    { name = "torch", specifier = "==2.10.0" },
-    { name = "torch-geometric", specifier = ">=2.3.0" },
+    { name = "scipy", specifier = ">=1.17.1" },
+    { name = "torch" },
+    { name = "torch-geometric", specifier = ">=2.7.0" },
     { name = "torch-scatter" },
     { name = "tqdm", specifier = ">=4.67.3" },
 ]
@@ -634,10 +634,8 @@ wheels = [
 [[package]]
 name = "torch-scatter"
 version = "2.1.2"
-source = { registry = "https://data.pyg.org/whl/torch-2.10.0+cpu.html" }
-wheels = [
-    { url = "https://data.pyg.org/whl/torch-2.10.0%2Bcpu/torch_scatter-2.1.2-cp311-cp311-macosx_10_9_universal2.whl" },
-]
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f5/ab/2a44ecac0f891dd0d765fc59ac8d277c6283a31907626560e72685df2ed6/torch_scatter-2.1.2.tar.gz", hash = "sha256:69b3aa435f2424ac6a1bfb6ff702da6eb73b33ca0db38fb26989c74159258e47", size = 108045, upload-time = "2023-10-06T08:49:07.081Z" }
 
 [[package]]
 name = "tqdm"
