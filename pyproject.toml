@@ -1,0 +1,55 @@
+[project]
+name = "esmif1"
+version = "0.1.0"
+description = "ESM inverse-folding model"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "biotite==0.41.2",
+    "fair-esm>=2.0.0",
+    "scipy>=1.17.1",
+    "torch",
+    "torch-geometric>=2.7.0",
+    "tqdm>=4.67.3",
+]
+
+[tool.uv.extra-build-dependencies]
+"torch-scatter" = ["torch"]
+
+[project.optional-dependencies]
+cpu = [
+    "torch-scatter"
+]
+cu126 = [
+    "torch-scatter"
+]
+cu128 = [
+    "torch-scatter"
+]
+c130 = [
+    "torch-scatter"
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+
+[[tool.uv.index]]
+name = "torch-scatter-cpu"
+url = "https://data.pyg.org/whl/torch-2.1.0+cpu.html"
+
+[[tool.uv.index]]
+name = "torch-scatter-cu126"
+url = "https://data.pyg.org/whl/torch-2.1.0+cu126.html"
+
+[[tool.uv.index]]
+name = "torch-scatter-cu128"
+url = "https://data.pyg.org/whl/torch-2.1.0+cu128.html"
+
+[[tool.uv.index]]
+name = "torch-scatter-cu130"
+url = "https://data.pyg.org/whl/torch-2.1.0+cu130.html"
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
