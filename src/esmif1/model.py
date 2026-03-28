@@ -25,9 +25,10 @@ class ESMIF1:
         Initialize the model.
 
         Args:
-            device: Device to run inference on, e.g., ``"cuda"`` or ``"cpu"``.
+            device: Device to run inference on, e.g., ``"cuda"`` or ``"cpu"``. Defaults to CUDA if available.
             batch_size: Number of sequences to process per batch.
             verbose: Whether to display a progress bar.
+            seed: Random seed for reproducible sampling.
         """
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -52,14 +53,19 @@ class ESMIF1:
         sequences: list[str],
     ) -> np.ndarray:
         """
-        Compute perplexity after inverse folding the backbones (coordinates) and comparing against the target sequences.
+        Compute per-sequence perplexity of native sequences given backbone coordinates.
+
+        Lower perplexity indicates the structure better explains the sequence. Sequences
+        are scored by running the encoder over the backbone and computing cross-entropy
+        of the decoder against the native tokens.
 
         Args:
-            coordinates: List of amino acid coordinates. Each entry: len(sequence) x 3 x 3 for N, CA, C atoms.
-            sequences: Amino acid sequences associated with the coordinates (backbone).
+            coordinates: Backbone coordinates, one array per sequence. Each array has
+                shape ``(L, 3, 3)`` for N, CA, C atoms.
+            sequences: Native amino acid sequences corresponding to each backbone.
 
         Returns:
-            np.ndarray: Perplexity scores.
+            Perplexity score for each sequence, shape ``(N,)``.
         """
         perplexities = []
         for i in tqdm(
@@ -89,6 +95,23 @@ class ESMIF1:
         n_samples: int = 1,
         temperature: float = 1.0,
     ) -> np.ndarray:
+        """
+        Estimate sequence recovery by sampling from the model and comparing against native sequences.
+
+        For each backbone, ``n_samples`` sequences are drawn and the fraction of positions
+        matching the native sequence is averaged across samples.
+
+        Args:
+            coordinates: Backbone coordinates, one array per sequence. Each array has
+                shape ``(L, 3, 3)`` for N, CA, C atoms.
+            sequences: Native amino acid sequences corresponding to each backbone.
+            n_samples: Number of sampled sequences to average over per backbone.
+            temperature: Sampling temperature. Lower values produce sequences closer to
+                the model's mode; higher values increase diversity.
+
+        Returns:
+            Mean sequence recovery (0-1) for each input sequence, shape ``(N,)``.
+        """
         recovery = []
         for i in tqdm(
             range(0, len(sequences), self.batch_size),
@@ -119,6 +142,20 @@ class ESMIF1:
         confidences: list[np.ndarray] | None = None,
         temperature: float = 1.0,
     ) -> list[str]:
+        """
+        Sample sequences conditioned on backbone coordinates.
+
+        Args:
+            coordinates: Backbone coordinates, one array per sequence. Each array has
+                shape ``(L, 3, 3)`` for N, CA, C atoms.
+            confidences: Per-residue confidence scores in ``[0, 1]``, one array of shape
+                ``(L,)`` per sequence. Defaults to all ones if not provided.
+            temperature: Sampling temperature. Lower values produce sequences closer to
+                the model's mode; higher values increase diversity.
+
+        Returns:
+            Sampled amino acid sequences, one per input backbone.
+        """
         samples = []
         for i in tqdm(
             range(0, len(coordinates), self.batch_size),
@@ -219,7 +256,7 @@ def _sample(
             the sequence is known
         temperature: sampling temperature, use low temperature for higher
             sequence recovery and high temperature for higher diversity
-        confidence: optional length L list of confidence scores for coordinates
+        confidence: optional length L list of confidence scores for coordinates. the value is between 0 and 1.
     """
 
     batch_coords, padding_mask, batch_confidences, _, _, _ = _tokenize(
@@ -290,6 +327,19 @@ def compute_perplexity(
     batch_size: int = 256,
     device: str | None = None,
 ) -> np.ndarray:
+    """
+    Compute per-sequence perplexity of native sequences given backbone coordinates.
+
+    Args:
+        coordinates: Backbone coordinates, one array per sequence. Each array has
+            shape ``(L, 3, 3)`` for N, CA, C atoms.
+        sequences: Native amino acid sequences corresponding to each backbone.
+        batch_size: Number of sequences per batch.
+        device: Device to run inference on. Defaults to CUDA if available.
+
+    Returns:
+        Perplexity score for each sequence, shape ``(N,)``.
+    """
     return ESMIF1(device=device, batch_size=batch_size).compute_perplexity(
         coordinates=coordinates,
         sequences=sequences,
@@ -305,6 +355,22 @@ def compute_sequence_recovery(
     batch_size: int = 256,
     device: str | None = None,
 ) -> np.ndarray:
+    """
+    Estimate sequence recovery by sampling from the model and comparing against native sequences.
+
+    Args:
+        coordinates: Backbone coordinates, one array per sequence. Each array has
+            shape ``(L, 3, 3)`` for N, CA, C atoms.
+        sequences: Native amino acid sequences corresponding to each backbone.
+        n_samples: Number of sampled sequences to average over per backbone.
+        temperature: Sampling temperature. Lower values produce sequences closer to
+            the model's mode; higher values increase diversity.
+        batch_size: Number of sequences per batch.
+        device: Device to run inference on. Defaults to CUDA if available.
+
+    Returns:
+        Mean sequence recovery (0-1) for each input sequence, shape ``(N,)``.
+    """
     return ESMIF1(device=device, batch_size=batch_size).compute_sequence_recovery(
         coordinates=coordinates,
         sequences=sequences,
@@ -321,6 +387,22 @@ def sample(
     batch_size: int = 256,
     device: str | None = None,
 ) -> np.ndarray:
+    """
+    Sample sequences conditioned on backbone coordinates.
+
+    Args:
+        coordinates: Backbone coordinates, one array per sequence. Each array has
+            shape ``(L, 3, 3)`` for N, CA, C atoms.
+        confidence: Per-residue confidence scores in ``[0, 1]``, one array of shape
+            ``(L,)`` per sequence. Defaults to all ones if not provided.
+        temperature: Sampling temperature. Lower values produce sequences closer to
+            the model's mode; higher values increase diversity.
+        batch_size: Number of sequences per batch.
+        device: Device to run inference on. Defaults to CUDA if available.
+
+    Returns:
+        Sampled amino acid sequences, one per input backbone.
+    """
     return ESMIF1(device=device, batch_size=batch_size).sample(
         coordinates=coordinates,
         confidences=confidence,
