@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from tqdm import tqdm
+import torch.nn.functional as F
 
 
 class ESMIF1:
@@ -42,7 +43,7 @@ class ESMIF1:
         self.model.to(device)
         self.model.eval()
 
-        self.seed = seed
+        self.generator = torch.Generator(device=self.device).manual_seed(seed)
 
     @torch.inference_mode()
     def compute_perplexity(
@@ -86,9 +87,8 @@ class ESMIF1:
         coordinates: list[np.ndarray],
         sequences: list[str],
         n_samples: int = 1,
+        temperature: float = 1.0,
     ) -> np.ndarray:
-        generator = torch.Generator(device=self.device).manual_seed(self.seed)
-
         recovery = []
         for i in tqdm(
             range(0, len(sequences), self.batch_size),
@@ -99,7 +99,7 @@ class ESMIF1:
 
             batch_recovery = np.zeros(len(batch_sequences))
             for _ in range(n_samples):
-                generated = self.sample(batch_coordinates, generator=generator)
+                generated = self.sample(batch_coordinates, temperature=temperature)
                 for j, (native_seq, sampled_seq) in enumerate(
                     zip(batch_sequences, generated)
                 ):
@@ -116,25 +116,29 @@ class ESMIF1:
     def sample(
         self,
         coordinates: list[np.ndarray],
-        *,
-        generator: torch.Generator | None = None,
+        confidences: list[np.ndarray] | None = None,
+        temperature: float = 1.0,
     ) -> list[str]:
-        if generator is None:
-            generator = torch.Generator(device=self.device).manual_seed(self.seed)
-
         samples = []
         for i in tqdm(
             range(0, len(coordinates), self.batch_size),
             disable=not self.verbose,
         ):
             batch_coordinates = coordinates[i : i + self.batch_size]
+            batch_confidences = (
+                confidences[i : i + self.batch_size]
+                if confidences is not None
+                else None
+            )
 
             batch_sequences = _sample(
                 model=self.model,
                 alphabet=self.alphabet,
                 coords=batch_coordinates,
+                confidences=batch_confidences,
                 device=self.device,
-                generator=generator,
+                temperature=temperature,
+                generator=self.generator,
             )
 
             samples.extend(batch_sequences)
@@ -142,18 +146,27 @@ class ESMIF1:
 
 
 # Adapted from: https://github.com/facebookresearch/esm/blob/main/esm/inverse_folding/util.py#L125
-def _tokenize(alphabet, coords: list[np.ndarray], sequences: list[str], device: str):
+def _tokenize(
+    alphabet,
+    coords: list[np.ndarray],
+    sequences: list[str],
+    confidences: list[np.ndarray],
+    device: str,
+):
     from esm.inverse_folding.util import CoordBatchConverter
 
     batch_converter = CoordBatchConverter(alphabet)
-    coords, confidence, _, tokens, padding_mask = batch_converter.from_lists(
-        coords_list=coords, seq_list=sequences, device=device
+    coords, confidences, _, tokens, padding_mask = batch_converter.from_lists(
+        coords_list=coords,
+        seq_list=sequences,
+        confidence_list=confidences,
+        device=device,
     )
     prev_output_tokens = tokens[:, :-1]
     target = tokens[:, 1:]
     target_mask = target != alphabet.padding_idx
 
-    return coords, padding_mask, confidence, prev_output_tokens, target, target_mask
+    return coords, padding_mask, confidences, prev_output_tokens, target, target_mask
 
 
 def _logits_to_perplexity(
@@ -171,102 +184,103 @@ def _compute_perplexity(
     sequences: list[str],
     device: str,
 ) -> np.ndarray:
-    coords, padding_mask, confidence, prev_output_tokens, targets, target_mask = (
-        _tokenize(alphabet=alphabet, coords=coords, sequences=sequences, device=device)
+    coords, padding_mask, confidences, prev_output_tokens, targets, target_mask = (
+        _tokenize(
+            alphabet=alphabet,
+            coords=coords,
+            sequences=sequences,
+            confidences=None,
+            device=device,
+        )
     )
-    logits, _ = model.forward(coords, padding_mask, confidence, prev_output_tokens)
+    logits, _ = model.forward(coords, padding_mask, confidences, prev_output_tokens)
     perplexities = _logits_to_perplexity(logits, targets, target_mask).cpu()
 
     return perplexities.cpu().numpy()
 
 
+# Adapted from: https://github.com/facebookresearch/esm/blob/main/esm/inverse_folding/gvp_transformer.py#L88
 def _sample(
     model,
     alphabet,
     coords: list[np.ndarray],
     generator: torch.Generator,
-    partial_seq=None,
+    partial_seqs: list[str] = None,  # @TODO: test
+    confidences: list[np.ndarray] = None,
     temperature: float = 1.0,
-    confidence: np.ndarray = None,
     device: str = None,
-) -> list[str]:
-    return [
-        _sample_single(
-            model,
-            alphabet,
-            seq_coords,
-            generator,
-            partial_seq,
-            temperature,
-            confidence,
-        )
-        for seq_coords in coords
-    ]
-
-
-def _sample_single(
-    model,
-    alphabet,
-    coords,
-    generator,
-    partial_seq=None,
-    temperature=1.0,
-    confidence=None,
 ) -> list[str]:
     """
     Samples sequences based on multinomial sampling (no beam search).
 
     Args:
-        coords: L x 3 x 3 list representing one backbone
-        partial_seq: Optional, partial sequence with mask tokens if part of
+        coords: List of numpy arrays of shape: L x 3 x 3, each representing a backbone
+        partial_seq: Optional, partial sequences with mask tokens if part of
             the sequence is known
         temperature: sampling temperature, use low temperature for higher
             sequence recovery and high temperature for higher diversity
         confidence: optional length L list of confidence scores for coordinates
     """
-    from esm.inverse_folding.util import CoordBatchConverter
-    import torch.nn.functional as F
 
-    L = len(coords)
-    # Convert to batch format
-    batch_converter = CoordBatchConverter(alphabet)
-    batch_coords, confidence, _, _, padding_mask = batch_converter(
-        [(coords, confidence, None)]
+    batch_coords, padding_mask, batch_confidences, _, _, _ = _tokenize(
+        alphabet=alphabet,
+        coords=coords,
+        sequences=None,
+        confidences=confidences,
+        device=device,
     )
 
-    # Start with prepend token
     mask_token_id = alphabet.get_idx("<mask>")
-    sampled_tokens = torch.full((1, 1 + L), mask_token_id, dtype=int)
-    sampled_tokens[0, 0] = alphabet.get_idx("<cath>")
-    if partial_seq is not None:
-        for i, c in enumerate(partial_seq):
-            sampled_tokens[0, i + 1] = alphabet.get_idx(c)
+
+    max_length = padding_mask.shape[-1] - 2  # excluding BOS + EOS
+
+    sampled_tokens = torch.full(
+        (len(coords), max_length + 1),
+        mask_token_id,
+        dtype=int,
+        device=device,
+    )
+    sampled_tokens[:, 0] = alphabet.get_idx("<cath>")
+
+    if partial_seqs is not None:
+        for i, partial_seq in enumerate(partial_seqs):
+            if partial_seq is None:
+                continue
+            for j, c in enumerate(partial_seq):
+                sampled_tokens[i, j + 1] = alphabet.get_idx(c)
 
     # Save incremental states for faster sampling
     incremental_state = dict()
 
     # Run encoder only once
-    encoder_out = model.encoder(batch_coords, padding_mask, confidence)
+    encoder_out = model.encoder(batch_coords, padding_mask, batch_confidences)
 
     # Decode one token at a time
-    for i in range(1, L + 1):
-        if sampled_tokens[0, i] != mask_token_id:
-            continue
+    for i in range(1, max_length + 1):
         logits, _ = model.decoder(
             sampled_tokens[:, :i],
             encoder_out,
             incremental_state=incremental_state,
         )
-        logits = logits[0].transpose(0, 1)
+        logits = logits[:, :, 0]
         logits /= temperature
         probs = F.softmax(logits, dim=-1)
         sampled_tokens[:, i] = torch.multinomial(probs, 1, generator=generator).squeeze(
             -1
         )
-    sampled_seq = sampled_tokens[0, 1:]
 
-    # Convert back to string via lookup
-    return "".join([alphabet.get_tok(a) for a in sampled_seq])
+    sampled_sequences = []
+
+    for seq_coords, seq_tokens in zip(coords, sampled_tokens, strict=True):
+        sequence = "".join(
+            [alphabet.get_tok(a) for a in seq_tokens[1 : 1 + len(seq_coords)]]
+        )
+        sampled_sequences.append(sequence)
+
+    return sampled_sequences
+
+
+## seqme interface
 
 
 def compute_perplexity(
@@ -277,7 +291,8 @@ def compute_perplexity(
     device: str | None = None,
 ) -> np.ndarray:
     return ESMIF1(device=device, batch_size=batch_size).compute_perplexity(
-        coordinates, sequences
+        coordinates=coordinates,
+        sequences=sequences,
     )
 
 
@@ -286,36 +301,48 @@ def compute_sequence_recovery(
     sequences: list[str],
     *,
     n_samples: int = 1,
+    temperature: float = 1.0,
     batch_size: int = 256,
     device: str | None = None,
 ) -> np.ndarray:
     return ESMIF1(device=device, batch_size=batch_size).compute_sequence_recovery(
-        coordinates, sequences, n_samples=n_samples
+        coordinates=coordinates,
+        sequences=sequences,
+        n_samples=n_samples,
+        temperature=temperature,
     )
 
 
 def sample(
     coordinates: list[np.ndarray],
     *,
+    confidence: list[np.ndarray] | None = None,
+    temperature: float = 1.0,
     batch_size: int = 256,
     device: str | None = None,
 ) -> np.ndarray:
-    return ESMIF1(device=device, batch_size=batch_size).sample(coordinates)
+    return ESMIF1(device=device, batch_size=batch_size).sample(
+        coordinates=coordinates,
+        confidences=confidence,
+        temperature=temperature,
+    )
 
 
 if __name__ == "__main__":
     coords = np.ones((4, 3, 3), dtype=np.float32)
+    confidence = np.ones(4, dtype=np.float32)
     sequence = "AKMM"
 
     n = 3
     all_coords = [coords] * n
+    all_confidence = [confidence] * n
     all_sequences = [sequence] * n
 
     ppl = compute_perplexity(all_coords, all_sequences)
     np.testing.assert_allclose(ppl, [30.44957] * n, rtol=1e-5)
 
-    sequences = sample(all_coords)
-    assert sequences == ["MGLR", "MIAG", "MPLN"]
+    sequences = sample(all_coords, confidence=all_confidence, temperature=1e-3)
+    assert sequences == ["MGHH", "MGHH", "MGHH"]
 
     recovery = compute_sequence_recovery(all_coords, all_sequences)
     np.testing.assert_allclose(recovery, [0.0] * n, rtol=1e-5)
